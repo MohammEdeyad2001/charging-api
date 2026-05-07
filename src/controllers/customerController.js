@@ -31,8 +31,23 @@ const payDebt = async (req, res) => {
   try {
     const customer = await pool.query('SELECT * FROM customer WHERE id = $1', [id]);
     if (customer.rows.length === 0) return res.status(404).json({ message: 'الزبون غير موجود' });
+
     await pool.query('INSERT INTO debt_payment (customer_id, amount, note) VALUES ($1, $2, $3)', [id, amount, note]);
     await pool.query('UPDATE customer SET balance = balance + $1 WHERE id = $2', [amount, id]);
+
+    let remaining = parseFloat(amount);
+    const pendingTransactions = await pool.query(
+      `SELECT * FROM transaction WHERE customer_id = $1 AND remaining_debt > 0 ORDER BY date ASC, received_at ASC`, [id]
+    );
+
+    for (const tx of pendingTransactions.rows) {
+      if (remaining <= 0) break;
+      const debt = parseFloat(tx.remaining_debt);
+      const pay = Math.min(remaining, debt);
+      await pool.query('UPDATE transaction SET amount_paid = amount_paid + $1 WHERE id = $2', [pay, tx.id]);
+      remaining -= pay;
+    }
+
     const updated = await pool.query('SELECT * FROM customer WHERE id = $1', [id]);
     res.json({ message: '✅ تم تسجيل الدفعة بنجاح', customer: updated.rows[0] });
   } catch (err) {
@@ -40,7 +55,6 @@ const payDebt = async (req, res) => {
   }
 };
 
-// سجل ديون زبون
 const getDebtHistory = async (req, res) => {
   const { id } = req.params;
   try {
@@ -48,9 +62,7 @@ const getDebtHistory = async (req, res) => {
     if (customer.rows.length === 0) return res.status(404).json({ message: 'الزبون غير موجود' });
 
     const debts = await pool.query(
-      `SELECT * FROM debt_payment 
-       WHERE customer_id = $1 
-       ORDER BY paid_at DESC`, [id]
+      `SELECT * FROM debt_payment WHERE customer_id = $1 ORDER BY paid_at DESC`, [id]
     );
 
     res.json({
