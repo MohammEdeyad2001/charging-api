@@ -150,6 +150,27 @@ const getRangeTransactions = async (req, res) => {
   }
 };
 
+
+
+
+const deleteTransaction = async (req, res) => {
+  const { id } = req.params;
+  try {
+    const transaction = await pool.query('SELECT * FROM transaction WHERE id = $1', [id]);
+    if (transaction.rows.length === 0) return res.status(404).json({ message: '«·⁄„·Ì… €Ì— „ÊÃÊœ…' });
+    const tx = transaction.rows[0];
+    if (parseFloat(tx.remaining_debt) > 0) {
+      await pool.query('UPDATE customer SET balance = balance + $1 WHERE id = $2', [tx.remaining_debt, tx.customer_id]);
+    }
+    if (tx.status === 'pending') {
+      await pool.query('UPDATE shelf SET is_occupied = false, current_customer_id = NULL WHERE id = $1', [tx.shelf_id]);
+    }
+    await pool.query('DELETE FROM transaction WHERE id = $1', [id]);
+    res.json({ message: ' „ Õ–› «·⁄„·Ì… »‰Ã«Õ' });
+  } catch (err) {
+    res.status(500).json({ message: 'Œÿ√ ›Ì «·”Ì—›—', error: err.message });
+  }
+};
 module.exports = { 
   createTransaction, 
   deliverTransaction, 
@@ -157,5 +178,6 @@ module.exports = {
   getTodayTransactions,
   getWeekTransactions,
   getMonthTransactions,
-  getRangeTransactions
+  getRangeTransactions,
+  deleteTransaction
 };

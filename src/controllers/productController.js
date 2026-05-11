@@ -48,4 +48,19 @@ const updateProduct = async (req, res) => {
   }
 };
 
-module.exports = { getAllProducts, addProduct, updateProduct };
+
+const deleteProduct = async (req, res) => {
+  const { id } = req.params;
+  try {
+    const inUse = await pool.query('SELECT COUNT(*) FROM transaction WHERE product_id = $1', [id]);
+    if (parseInt(inUse.rows[0].count) > 0) {
+      return res.status(400).json({ message: '·« Ì„ﬂ‰ Õ–› „‰ Ã „” Œœ„ ›Ì ⁄„·Ì« ' });
+    }
+    const result = await pool.query('DELETE FROM product WHERE id = $1 RETURNING *', [id]);
+    if (result.rows.length === 0) return res.status(404).json({ message: '«·„‰ Ã €Ì— „ÊÃÊœ' });
+    res.json({ message: ' „ Õ–› «·„‰ Ã »‰Ã«Õ' });
+  } catch (err) {
+    res.status(500).json({ message: 'Œÿ√ ›Ì «·”Ì—›—', error: err.message });
+  }
+};
+module.exports = { getAllProducts, addProduct, updateProduct, deleteProduct };
