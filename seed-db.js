@@ -1,9 +1,7 @@
 const { Pool } = require('pg');
 
 const pool = new Pool({
-  connectionString: 'postgresql://postgres:pPBLTmtUlfhfrlLqQHlVBuMAtfEHynAR@trolley.proxy.rlwy.net:51589/railway',
-  ssl: { rejectUnauthorized: false }
-});
+connectionString: 'postgresql://postgres:nNTldTMyEVzaEwOcsoxLmFaXQodAJbLI@trolley.proxy.rlwy.net:49829/railway',});
 
 const seedData = async () => {
   try {
