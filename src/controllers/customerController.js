@@ -2,7 +2,10 @@ const pool = require('../config/db');
 
 const getAllCustomers = async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM customer ORDER BY name ASC');
+    const result = await pool.query(
+      'SELECT * FROM customer WHERE owner_id = $1 ORDER BY name ASC',
+      [req.owner.id]
+    );
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ message: '❌ خطأ في السيرفر', error: err.message });
@@ -12,8 +15,12 @@ const getAllCustomers = async (req, res) => {
 const getCustomerById = async (req, res) => {
   const { id } = req.params;
   try {
-    const customer = await pool.query('SELECT * FROM customer WHERE id = $1', [id]);
+    const customer = await pool.query(
+      'SELECT * FROM customer WHERE id = $1 AND owner_id = $2',
+      [id, req.owner.id]
+    );
     if (customer.rows.length === 0) return res.status(404).json({ message: 'الزبون غير موجود' });
+
     const transactions = await pool.query(
       `SELECT t.*, p.name as product_name FROM transaction t
        LEFT JOIN product p ON t.product_id = p.id
@@ -29,7 +36,10 @@ const payDebt = async (req, res) => {
   const { id } = req.params;
   const { amount, note } = req.body;
   try {
-    const customer = await pool.query('SELECT * FROM customer WHERE id = $1', [id]);
+    const customer = await pool.query(
+      'SELECT * FROM customer WHERE id = $1 AND owner_id = $2',
+      [id, req.owner.id]
+    );
     if (customer.rows.length === 0) return res.status(404).json({ message: 'الزبون غير موجود' });
 
     await pool.query('INSERT INTO debt_payment (customer_id, amount, note) VALUES ($1, $2, $3)', [id, amount, note]);
@@ -44,7 +54,12 @@ const payDebt = async (req, res) => {
       if (remaining <= 0) break;
       const debt = parseFloat(tx.remaining_debt);
       const pay = Math.min(remaining, debt);
-      await pool.query('UPDATE transaction SET amount_paid = amount_paid + $1 WHERE id = $2', [pay, tx.id]);
+      const newAmountPaid = parseFloat(tx.amount_paid) + pay;
+      const newStatus = newAmountPaid >= parseFloat(tx.amount_due) ? 'paid' : 'partial';
+      await pool.query(
+        'UPDATE transaction SET amount_paid = $1, payment_status = $2 WHERE id = $3',
+        [newAmountPaid, newStatus, tx.id]
+      );
       remaining -= pay;
     }
 
@@ -58,7 +73,10 @@ const payDebt = async (req, res) => {
 const getDebtHistory = async (req, res) => {
   const { id } = req.params;
   try {
-    const customer = await pool.query('SELECT * FROM customer WHERE id = $1', [id]);
+    const customer = await pool.query(
+      'SELECT * FROM customer WHERE id = $1 AND owner_id = $2',
+      [id, req.owner.id]
+    );
     if (customer.rows.length === 0) return res.status(404).json({ message: 'الزبون غير موجود' });
 
     const debts = await pool.query(
@@ -78,10 +96,12 @@ const getDebtHistory = async (req, res) => {
 const deleteCustomer = async (req, res) => {
   const { id } = req.params;
   try {
-    const customer = await pool.query('SELECT * FROM customer WHERE id = $1', [id]);
+    const customer = await pool.query(
+      'SELECT * FROM customer WHERE id = $1 AND owner_id = $2',
+      [id, req.owner.id]
+    );
     if (customer.rows.length === 0) return res.status(404).json({ message: 'الزبون غير موجود' });
 
-    // تحقق إذا عليه ديون
     if (parseFloat(customer.rows[0].balance) < 0) {
       return res.status(400).json({ 
         message: '❌ لا يمكن حذف زبون عليه ديون',
@@ -89,13 +109,8 @@ const deleteCustomer = async (req, res) => {
       });
     }
 
-    // حذف سجل الديون
     await pool.query('DELETE FROM debt_payment WHERE customer_id = $1', [id]);
-    
-    // حذف العمليات
     await pool.query('DELETE FROM transaction WHERE customer_id = $1', [id]);
-    
-    // حذف الزبون
     await pool.query('DELETE FROM customer WHERE id = $1', [id]);
 
     res.json({ message: '✅ تم حذف الزبون بنجاح' });

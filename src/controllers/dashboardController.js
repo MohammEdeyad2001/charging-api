@@ -1,44 +1,45 @@
 const pool = require('../config/db');
 
 const getDashboard = async (req, res) => {
+  const owner_id = req.owner.id;
   try {
-    // إجمالي دخل اليوم
     const todayIncome = await pool.query(
       `SELECT COALESCE(SUM(amount_paid), 0) as total
        FROM transaction
-       WHERE date = CURRENT_DATE`
+       WHERE owner_id = $1 AND date = CURRENT_DATE`,
+      [owner_id]
     );
 
-    // إجمالي الديون
     const totalDebts = await pool.query(
       `SELECT COALESCE(SUM(ABS(balance)), 0) as total
        FROM customer
-       WHERE balance < 0`
+       WHERE owner_id = $1 AND balance < 0`,
+      [owner_id]
     );
 
-    // عدد العمليات اليوم
     const todayTransactions = await pool.query(
       `SELECT COUNT(*) as total
        FROM transaction
-       WHERE date = CURRENT_DATE`
+       WHERE owner_id = $1 AND date = CURRENT_DATE`,
+      [owner_id]
     );
 
-    // الرفوف المشغولة
     const occupiedShelves = await pool.query(
       `SELECT s.shelf_number, c.name as customer_name
        FROM shelf s
        LEFT JOIN customer c ON s.current_customer_id = c.id
-       WHERE s.is_occupied = true`
+       WHERE s.owner_id = $1 AND s.is_occupied = true`,
+      [owner_id]
     );
 
-    // الرفوف الفارغة
     const freeShelves = await pool.query(
-      `SELECT COUNT(*) as total FROM shelf WHERE is_occupied = false`
+      `SELECT COUNT(*) as total FROM shelf WHERE owner_id = $1 AND is_occupied = false`,
+      [owner_id]
     );
 
-    // إجمالي الدخل الكلي
     const totalIncome = await pool.query(
-      `SELECT COALESCE(SUM(amount_paid), 0) as total FROM transaction`
+      `SELECT COALESCE(SUM(amount_paid), 0) as total FROM transaction WHERE owner_id = $1`,
+      [owner_id]
     );
 
     res.json({

@@ -2,15 +2,14 @@ const pool = require('../config/db');
 
 const createTransaction = async (req, res) => {
   const { customer_name, product_id, product_name, shelf_id, quantity, amount_paid, payment_status, notes, type } = req.body;
+  const owner_id = req.owner.id;
   try {
-    // نوع العملية (charging أو sale)
     const transaction_type = type || 'charging';
 
-    // تحقق من الرف فقط إذا كانت عملية شحن
     if (transaction_type === 'charging') {
       if (!shelf_id) return res.status(400).json({ message: 'رقم الرف مطلوب لعمليات الشحن' });
       
-      const shelf = await pool.query('SELECT * FROM shelf WHERE id = $1', [shelf_id]);
+      const shelf = await pool.query('SELECT * FROM shelf WHERE id = $1 AND owner_id = $2', [shelf_id, owner_id]);
       if (shelf.rows.length === 0) return res.status(404).json({ message: 'الرف غير موجود' });
 
       if (shelf.rows[0].is_occupied && shelf.rows[0].current_customer_id) {
@@ -22,32 +21,41 @@ const createTransaction = async (req, res) => {
       }
     }
 
-    // جلب المنتج بالاسم أو الـ ID
     let product;
     if (product_id) {
-      product = await pool.query('SELECT * FROM product WHERE id = $1', [product_id]);
+      product = await pool.query('SELECT * FROM product WHERE id = $1 AND owner_id = $2', [product_id, owner_id]);
     } else if (product_name) {
-      product = await pool.query('SELECT * FROM product WHERE LOWER(name) = LOWER($1)', [product_name]);
+      product = await pool.query('SELECT * FROM product WHERE LOWER(name) = LOWER($1) AND owner_id = $2', [product_name, owner_id]);
     }
     if (!product || product.rows.length === 0) return res.status(404).json({ message: 'المنتج غير موجود' });
 
     const amount_due = product.rows[0].selling_price * (quantity || 1);
 
-    // تحقق من الزبون أو أضفه
     let customer;
-    const existingCustomer = await pool.query('SELECT * FROM customer WHERE LOWER(name) = LOWER($1)', [customer_name]);
+    const existingCustomer = await pool.query(
+      'SELECT * FROM customer WHERE LOWER(name) = LOWER($1) AND owner_id = $2',
+      [customer_name, owner_id]
+    );
     if (existingCustomer.rows.length > 0) {
       customer = existingCustomer.rows[0];
     } else {
-      const similarCustomer = await pool.query("SELECT * FROM customer WHERE LOWER(name) LIKE LOWER($1)", [`%${customer_name.split(' ')[0]}%`]);
+      const similarCustomer = await pool.query(
+        "SELECT * FROM customer WHERE LOWER(name) LIKE LOWER($1) AND owner_id = $2",
+        [`%${customer_name.split(' ')[0]}%`, owner_id]
+      );
       if (similarCustomer.rows.length > 0 && customer_name.split(' ').length === 1) {
-        return res.status(409).json({ message: '⚠️ يوجد زبون بنفس الاسم، هل تريد إضافة الاسم الثلاثي للتمييز؟', similar: similarCustomer.rows.map(c => c.name) });
+        return res.status(409).json({
+          message: '⚠️ يوجد زبون بنفس الاسم، هل تريد إضافة الاسم الثلاثي للتمييز؟',
+          similar: similarCustomer.rows.map(c => c.name)
+        });
       }
-      const newCustomer = await pool.query('INSERT INTO customer (name) VALUES ($1) RETURNING *', [customer_name]);
+      const newCustomer = await pool.query(
+        'INSERT INTO customer (name, owner_id) VALUES ($1, $2) RETURNING *',
+        [customer_name, owner_id]
+      );
       customer = newCustomer.rows[0];
     }
 
-    // منطق الدفع
     let final_amount_paid = amount_paid || 0;
     let final_payment_status = payment_status || 'debt';
 
@@ -69,26 +77,20 @@ const createTransaction = async (req, res) => {
       }
     }
 
-    // تسجيل العملية
     const final_shelf_id = transaction_type === 'charging' ? shelf_id : null;
-    
-    // عملية البيع = تسليم فوري
     const final_status = transaction_type === 'sale' ? 'delivered' : 'pending';
-    const final_delivered_at = transaction_type === 'sale' ? 'NOW()' : null;
 
     const result = await pool.query(
-      `INSERT INTO transaction (customer_id, product_id, shelf_id, quantity, amount_due, amount_paid, payment_status, notes, type, status, delivered_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, ${transaction_type === 'sale' ? 'NOW()' : 'NULL'}) RETURNING *`,
-      [customer.id, product.rows[0].id, final_shelf_id, quantity || 1, amount_due, final_amount_paid, final_payment_status, notes, transaction_type, final_status]
+      `INSERT INTO transaction (customer_id, product_id, shelf_id, quantity, amount_due, amount_paid, payment_status, notes, type, status, delivered_at, owner_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, ${transaction_type === 'sale' ? 'NOW()' : 'NULL'}, $11) RETURNING *`,
+      [customer.id, product.rows[0].id, final_shelf_id, quantity || 1, amount_due, final_amount_paid, final_payment_status, notes, transaction_type, final_status, owner_id]
     );
 
-    // تحديث رصيد الزبون إذا في دين
     const remaining_debt = amount_due - final_amount_paid;
     if (remaining_debt > 0 && payment_status !== 'balance') {
       await pool.query('UPDATE customer SET balance = balance - $1 WHERE id = $2', [remaining_debt, customer.id]);
     }
 
-    // تحديث الرف فقط لعمليات الشحن
     if (transaction_type === 'charging' && shelf_id) {
       await pool.query('UPDATE shelf SET is_occupied = true, current_customer_id = $1 WHERE id = $2', [customer.id, shelf_id]);
     }
@@ -102,10 +104,15 @@ const createTransaction = async (req, res) => {
 const deliverTransaction = async (req, res) => {
   const { id } = req.params;
   try {
-    const transaction = await pool.query('SELECT * FROM transaction WHERE id = $1', [id]);
+    const transaction = await pool.query(
+      'SELECT * FROM transaction WHERE id = $1 AND owner_id = $2',
+      [id, req.owner.id]
+    );
     if (transaction.rows.length === 0) return res.status(404).json({ message: 'العملية غير موجودة' });
     await pool.query('UPDATE transaction SET status = $1, delivered_at = NOW() WHERE id = $2', ['delivered', id]);
-    await pool.query('UPDATE shelf SET is_occupied = false, current_customer_id = NULL WHERE id = $1', [transaction.rows[0].shelf_id]);
+    if (transaction.rows[0].shelf_id) {
+      await pool.query('UPDATE shelf SET is_occupied = false, current_customer_id = NULL WHERE id = $1', [transaction.rows[0].shelf_id]);
+    }
     res.json({ message: '✅ تم تسليم الجهاز بنجاح' });
   } catch (err) {
     res.status(500).json({ message: '❌ خطأ في السيرفر', error: err.message });
@@ -120,7 +127,9 @@ const getAllTransactions = async (req, res) => {
        LEFT JOIN customer c ON t.customer_id = c.id
        LEFT JOIN product p ON t.product_id = p.id
        LEFT JOIN shelf s ON t.shelf_id = s.id
-       ORDER BY t.date DESC, t.received_at DESC`
+       WHERE t.owner_id = $1
+       ORDER BY t.date DESC, t.received_at DESC`,
+      [req.owner.id]
     );
     res.json(result.rows);
   } catch (err) {
@@ -136,8 +145,9 @@ const getTodayTransactions = async (req, res) => {
        LEFT JOIN customer c ON t.customer_id = c.id
        LEFT JOIN product p ON t.product_id = p.id
        LEFT JOIN shelf s ON t.shelf_id = s.id
-       WHERE t.date = CURRENT_DATE
-       ORDER BY t.received_at DESC`
+       WHERE t.owner_id = $1 AND t.date = CURRENT_DATE
+       ORDER BY t.received_at DESC`,
+      [req.owner.id]
     );
     res.json(result.rows);
   } catch (err) {
@@ -153,8 +163,9 @@ const getWeekTransactions = async (req, res) => {
        LEFT JOIN customer c ON t.customer_id = c.id
        LEFT JOIN product p ON t.product_id = p.id
        LEFT JOIN shelf s ON t.shelf_id = s.id
-       WHERE t.date >= CURRENT_DATE - INTERVAL '7 days'
-       ORDER BY t.date DESC, t.received_at DESC`
+       WHERE t.owner_id = $1 AND t.date >= CURRENT_DATE - INTERVAL '7 days'
+       ORDER BY t.date DESC, t.received_at DESC`,
+      [req.owner.id]
     );
     res.json(result.rows);
   } catch (err) {
@@ -170,8 +181,9 @@ const getMonthTransactions = async (req, res) => {
        LEFT JOIN customer c ON t.customer_id = c.id
        LEFT JOIN product p ON t.product_id = p.id
        LEFT JOIN shelf s ON t.shelf_id = s.id
-       WHERE t.date >= DATE_TRUNC('month', CURRENT_DATE)
-       ORDER BY t.date DESC, t.received_at DESC`
+       WHERE t.owner_id = $1 AND t.date >= DATE_TRUNC('month', CURRENT_DATE)
+       ORDER BY t.date DESC, t.received_at DESC`,
+      [req.owner.id]
     );
     res.json(result.rows);
   } catch (err) {
@@ -189,9 +201,9 @@ const getRangeTransactions = async (req, res) => {
        LEFT JOIN customer c ON t.customer_id = c.id
        LEFT JOIN product p ON t.product_id = p.id
        LEFT JOIN shelf s ON t.shelf_id = s.id
-       WHERE t.date BETWEEN $1 AND $2
+       WHERE t.owner_id = $1 AND t.date BETWEEN $2 AND $3
        ORDER BY t.date DESC, t.received_at DESC`,
-      [from, to]
+      [req.owner.id, from, to]
     );
     res.json(result.rows);
   } catch (err) {
@@ -202,13 +214,16 @@ const getRangeTransactions = async (req, res) => {
 const deleteTransaction = async (req, res) => {
   const { id } = req.params;
   try {
-    const transaction = await pool.query('SELECT * FROM transaction WHERE id = $1', [id]);
+    const transaction = await pool.query(
+      'SELECT * FROM transaction WHERE id = $1 AND owner_id = $2',
+      [id, req.owner.id]
+    );
     if (transaction.rows.length === 0) return res.status(404).json({ message: 'العملية غير موجودة' });
     const tx = transaction.rows[0];
     if (parseFloat(tx.remaining_debt) > 0) {
       await pool.query('UPDATE customer SET balance = balance + $1 WHERE id = $2', [tx.remaining_debt, tx.customer_id]);
     }
-    if (tx.status === 'pending') {
+    if (tx.status === 'pending' && tx.shelf_id) {
       await pool.query('UPDATE shelf SET is_occupied = false, current_customer_id = NULL WHERE id = $1', [tx.shelf_id]);
     }
     await pool.query('DELETE FROM transaction WHERE id = $1', [id]);
