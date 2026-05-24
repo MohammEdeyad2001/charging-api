@@ -7,7 +7,8 @@ const getAllShelves = async (req, res) => {
        FROM shelf s
        LEFT JOIN customer c ON s.current_customer_id = c.id
        WHERE s.owner_id = $1
-ORDER BY CAST(s.shelf_number AS INTEGER)      [req.owner.id]
+       ORDER BY CAST(s.shelf_number AS INTEGER)`,
+      [req.owner.id]
     );
     res.json(result.rows);
   } catch (err) {
@@ -58,17 +59,13 @@ const deleteShelf = async (req, res) => {
 const addMultipleShelves = async (req, res) => {
   const { count } = req.body;
   if (!count || count < 1) return res.status(400).json({ message: 'يجب تحديد عدد الرفوف' });
-  
   try {
-    // جلب أكبر رقم رف موجود
     const lastShelf = await pool.query(
       'SELECT MAX(CAST(shelf_number AS INTEGER)) as max_num FROM shelf WHERE owner_id = $1',
       [req.owner.id]
     );
-    
     const startFrom = (lastShelf.rows[0].max_num || 0) + 1;
     const added = [];
-    
     for (let i = startFrom; i < startFrom + count; i++) {
       const result = await pool.query(
         'INSERT INTO shelf (shelf_number, owner_id) VALUES ($1, $2) RETURNING *',
@@ -76,11 +73,7 @@ const addMultipleShelves = async (req, res) => {
       );
       added.push(result.rows[0]);
     }
-    
-    res.status(201).json({ 
-      message: `✅ تم إضافة ${added.length} رف بنجاح`, 
-      shelves: added 
-    });
+    res.status(201).json({ message: `✅ تم إضافة ${added.length} رف بنجاح`, shelves: added });
   } catch (err) {
     res.status(500).json({ message: '❌ خطأ في السيرفر', error: err.message });
   }
