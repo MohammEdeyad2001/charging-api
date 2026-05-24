@@ -7,8 +7,7 @@ const getAllShelves = async (req, res) => {
        FROM shelf s
        LEFT JOIN customer c ON s.current_customer_id = c.id
        WHERE s.owner_id = $1
-       ORDER BY s.shelf_number`,
-      [req.owner.id]
+ORDER BY CAST(s.shelf_number AS INTEGER)      [req.owner.id]
     );
     res.json(result.rows);
   } catch (err) {
