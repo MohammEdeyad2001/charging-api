@@ -55,5 +55,29 @@ const deleteShelf = async (req, res) => {
     res.status(500).json({ message: '❌ خطأ في السيرفر', error: err.message });
   }
 };
+const addMultipleShelves = async (req, res) => {
+  const { count } = req.body;
+  if (!count || count < 1) return res.status(400).json({ message: 'يجب تحديد عدد الرفوف' });
+  
+  try {
+    const added = [];
+    for (let i = 1; i <= count; i++) {
+      const existing = await pool.query(
+        'SELECT * FROM shelf WHERE shelf_number = $1 AND owner_id = $2',
+        [i.toString(), req.owner.id]
+      );
+      if (existing.rows.length === 0) {
+        const result = await pool.query(
+          'INSERT INTO shelf (shelf_number, owner_id) VALUES ($1, $2) RETURNING *',
+          [i.toString(), req.owner.id]
+        );
+        added.push(result.rows[0]);
+      }
+    }
+    res.status(201).json({ message: `✅ تم إضافة ${added.length} رف بنجاح`, shelves: added });
+  } catch (err) {
+    res.status(500).json({ message: '❌ خطأ في السيرفر', error: err.message });
+  }
+};
 
-module.exports = { getAllShelves, addShelf, deleteShelf };
+module.exports = { getAllShelves, addShelf, addMultipleShelves, deleteShelf };
