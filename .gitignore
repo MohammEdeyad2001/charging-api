@@ -1,3 +1,6 @@
 node_modules/
 .env
 src/config/firebase.js
+src/firebase.js
+test-firebase.js
+charging-point-d964c-firebase-adminsdk-fbsvc-275bf610a0.json
