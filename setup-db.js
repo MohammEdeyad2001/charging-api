@@ -68,13 +68,33 @@ const createTables = async () => {
         note TEXT,
         paid_at TIMESTAMP DEFAULT NOW()
       );
+
+// ... الكود القديم الموجود في setup-db.js
+CREATE TABLE IF NOT EXISTS debt_payment (
+    id SERIAL PRIMARY KEY,
+    customer_id INT,
+    amount FLOAT NOT NULL,
+    note TEXT,
+    paid_at TIMESTAMP DEFAULT NOW()
+);
+
+-- التعديل الجديد: أضف السطرين هنا داخل نفس النص
+ALTER TABLE owner ADD COLUMN IF NOT EXISTS firebase_uid VARCHAR(255) UNIQUE;
+ALTER TABLE owner ALTER COLUMN password DROP NOT NULL;
+
     `);
+
+
+    
     console.log('✅ تم إنشاء الجداول بنجاح!');
   } catch (err) {
     console.error('❌ خطأ:', err.message);
   } finally {
     pool.end();
   }
+
+
+  
 };
 
 createTables();
