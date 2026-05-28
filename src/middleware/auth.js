@@ -1,43 +1,45 @@
-const admin = require('../firebase'); // 💡 تعديل المسار ليتناسب مع ملفك الحالي
+const path = require('path');
+// استخدام مسار مطلق متوافق مع نظام لينكس في Railway
+const admin = require(path.join(__dirname, '../firebase')); 
 const pool = require('../config/db');
 
 const authMiddleware = async (req, res, next) => {
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ message: '❌ يجب تسجيل الدخول أولاً، التوكن مفقود' });
+    return res.status(401).json({ message: '❌ غير مصرح لك بالدخول، التوكن مفقود' });
   }
 
   const token = authHeader.split(' ')[1];
 
   try {
-    // 1. التحقق من توكن الفايربيز
     const decodedToken = await admin.auth().verifyIdToken(token);
-    
-    // 2. البحث عن صاحب المحطة في قاعدة البيانات المحلية بواسطة firebase_uid
-    let owner = await pool.query(
+    const firebaseUid = decodedToken.uid;
+
+    let ownerResult = await pool.query(
       'SELECT id, name, email, firebase_uid FROM owner WHERE firebase_uid = $1',
-      [decodedToken.uid]
+      [firebaseUid]
     );
 
-    // 3. إذا لم يوجد (مثلاً سجل لأول مرة في الفايربيز ولم يخزن محلياً)، يتم إنشاؤه تلقائياً
-    if (owner.rows.length === 0) {
+    if (ownerResult.rows.length === 0) {
+      const name = decodedToken.name || decodedToken.email.split('@')[0];
+      const email = decodedToken.email;
+
       const newOwner = await pool.query(
-        'INSERT INTO owner (name, email, firebase_uid) VALUES ($1, $2, $3) RETURNING id, name, email, firebase_uid',
-        [decodedToken.name || decodedToken.email.split('@')[0], decodedToken.email, decodedToken.uid]
+        'INSERT INTO owner (name, email, firebase_uid, created_at) VALUES ($1, $2, $3, NOW()) RETURNING id, name, email, firebase_uid',
+        [name, email, firebaseUid]
       );
-      owner = { rows: [newOwner.rows[0]] };
+      ownerResult = { rows: [newOwner.rows[0]] };
     }
 
-    // 4. نضع كائن الـ owner داخل الـ req لتستخدمه بقية الـ Controllers بكفاءة
-    req.owner = owner.rows[0]; 
+    req.owner = ownerResult.rows[0]; 
     next();
   } catch (err) {
-    console.error('Auth Middleware Error:', err);
+    console.error('Firebase Auth Error:', err.message);
     if (err.code === 'auth/id-token-expired') {
-      return res.status(401).json({ message: '❌ انتهت صلاحية التوكن، الرجاء إعادة تسجيل الدخول' });
+      return res.status(401).json({ message: '❌ انتهت صلاحية التوكن، يرجى تحديث الجلسة من الموبايل' });
     }
-    return res.status(401).json({ message: '❌ توكن غير صالح أو غير مصرح به', error: err.message });
+    return res.status(401).json({ message: '❌ توكن غير صالح أو منتهي الصلاحية', error: err.message });
   }
 };
 
