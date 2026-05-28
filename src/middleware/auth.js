@@ -1,26 +1,8 @@
 const path = require('path');
-const fs = require('fs');
 const pool = require('../config/db');
 
-// تحديد المسارين المحتملين لملف firebase.js ليعمل محلياً وعلى السيرفر بدون أي تعارض
-const localPath = path.join(process.cwd(), 'src', 'firebase.js');
-const productionPath = path.join(process.cwd(), 'firebase.js');
-
-let admin;
-
-// فحص المسار الذكي لتجنب تعطل السيرفر في أي بيئة
-if (fs.existsSync(localPath)) {
-  admin = require(localPath);
-} else if (fs.existsSync(productionPath)) {
-  admin = require(productionPath);
-} else {
-  // حل احتياطي أخير بالمسار النسبي التقليدي لو فشلت المسارات المطلقة
-  try {
-    admin = require('../firebase');
-  } catch (e) {
-    admin = require('../../firebase');
-  }
-}
+// 💡 استخدام __dirname يضمن العودة خطوة للخلف من المجلد الحالي بشكل سليم على أي نظام تشغيل
+const admin = require(path.join(__dirname, '../firebase'));
 
 const authMiddleware = async (req, res, next) => {
   const authHeader = req.headers.authorization;
@@ -32,17 +14,14 @@ const authMiddleware = async (req, res, next) => {
   const token = authHeader.split(' ')[1];
 
   try {
-    // 1. التحقق من التوكن عبر فايربيز
     const decodedToken = await admin.auth().verifyIdToken(token);
     const firebaseUid = decodedToken.uid;
 
-    // 2. البحث عن صاحب النقطة محلياً بواسطة firebase_uid
     let ownerResult = await pool.query(
       'SELECT id, name, email, firebase_uid FROM owner WHERE firebase_uid = $1',
       [firebaseUid]
     );
 
-    // 3. إنشاء تلقائي للحساب إذا لم يكن مخزناً محلياً
     if (ownerResult.rows.length === 0) {
       const name = decodedToken.name || decodedToken.email.split('@')[0];
       const email = decodedToken.email;
@@ -54,9 +33,7 @@ const authMiddleware = async (req, res, next) => {
       ownerResult = { rows: [newOwner.rows[0]] };
     }
 
-    // 4. تمرير بيانات صاحب المحطة للـ Controllers
     req.owner = ownerResult.rows[0]; 
-    
     next();
   } catch (err) {
     console.error('Firebase Auth Error:', err.message);
