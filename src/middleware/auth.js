@@ -1,7 +1,8 @@
 const path = require('path');
-// استخدام مسار مطلق متوافق مع نظام لينكس في Railway
-const admin = require(path.join(__dirname, '../firebase')); 
 const pool = require('../config/db');
+
+// 💡 الوصول لملف firebase.js الموجود داخل مجلد src بشكل مطلق ودقيق 100%
+const admin = require(path.join(process.cwd(), 'src', 'firebase.js'));
 
 const authMiddleware = async (req, res, next) => {
   const authHeader = req.headers.authorization;
@@ -13,14 +14,17 @@ const authMiddleware = async (req, res, next) => {
   const token = authHeader.split(' ')[1];
 
   try {
+    // 1. التحقق من التوكن عبر فايربيز
     const decodedToken = await admin.auth().verifyIdToken(token);
     const firebaseUid = decodedToken.uid;
 
+    // 2. البحث عن صاحب النقطة محلياً بواسطة firebase_uid
     let ownerResult = await pool.query(
       'SELECT id, name, email, firebase_uid FROM owner WHERE firebase_uid = $1',
       [firebaseUid]
     );
 
+    // 3. إنشاء تلقائي للحساب إذا لم يكن مخزناً محلياً
     if (ownerResult.rows.length === 0) {
       const name = decodedToken.name || decodedToken.email.split('@')[0];
       const email = decodedToken.email;
@@ -32,7 +36,9 @@ const authMiddleware = async (req, res, next) => {
       ownerResult = { rows: [newOwner.rows[0]] };
     }
 
+    // 4. تمرير بيانات صاحب المحطة للـ Controllers
     req.owner = ownerResult.rows[0]; 
+    
     next();
   } catch (err) {
     console.error('Firebase Auth Error:', err.message);
