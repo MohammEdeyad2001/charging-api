@@ -1,8 +1,26 @@
 const path = require('path');
+const fs = require('fs');
 const pool = require('../config/db');
 
-// 💡 الوصول لملف firebase.js الموجود داخل مجلد src بشكل مطلق ودقيق 100%
-const admin = require(path.join(process.cwd(), 'src', 'firebase.js'));
+// تحديد المسارين المحتملين لملف firebase.js ليعمل محلياً وعلى السيرفر بدون أي تعارض
+const localPath = path.join(process.cwd(), 'src', 'firebase.js');
+const productionPath = path.join(process.cwd(), 'firebase.js');
+
+let admin;
+
+// فحص المسار الذكي لتجنب تعطل السيرفر في أي بيئة
+if (fs.existsSync(localPath)) {
+  admin = require(localPath);
+} else if (fs.existsSync(productionPath)) {
+  admin = require(productionPath);
+} else {
+  // حل احتياطي أخير بالمسار النسبي التقليدي لو فشلت المسارات المطلقة
+  try {
+    admin = require('../firebase');
+  } catch (e) {
+    admin = require('../../firebase');
+  }
+}
 
 const authMiddleware = async (req, res, next) => {
   const authHeader = req.headers.authorization;
