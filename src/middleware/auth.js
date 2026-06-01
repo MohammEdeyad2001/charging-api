@@ -1,7 +1,6 @@
 const path = require('path');
 const pool = require('../config/db');
 
-// 💡 استخدام __dirname يضمن العودة خطوة للخلف من المجلد الحالي بشكل سليم على أي نظام تشغيل
 const admin = require(path.join(__dirname, '../firebase'));
 
 const authMiddleware = async (req, res, next) => {
@@ -27,13 +26,13 @@ const authMiddleware = async (req, res, next) => {
       const email = decodedToken.email;
 
       const newOwner = await pool.query(
-        'INSERT INTO owner (name, email, firebase_uid, created_at) VALUES ($1, $2, $3, NOW()) RETURNING id, name, email, firebase_uid',
-        [name, email, firebaseUid]
+        'INSERT INTO owner (name, email, firebase_uid, password, created_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING id, name, email, firebase_uid',
+        [name, email, firebaseUid, 'firebase_auth']
       );
       ownerResult = { rows: [newOwner.rows[0]] };
     }
 
-    req.owner = ownerResult.rows[0]; 
+    req.owner = ownerResult.rows[0];
     next();
   } catch (err) {
     console.error('Firebase Auth Error:', err.message);
