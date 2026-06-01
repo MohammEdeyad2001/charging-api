@@ -1,3 +1,4 @@
+// src/controllers/customerController.js
 const pool = require('../config/db');
 
 const getAllCustomers = async (req, res) => {
@@ -8,7 +9,8 @@ const getAllCustomers = async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    res.status(500).json({ message: '❌ خطأ في السيرفر', error: err.message });
+    console.error('getAllCustomers error:', err && err.message ? err.message : err);
+    res.status(500).json({ message: '❌ خطأ في السيرفر' });
   }
 };
 
@@ -28,45 +30,69 @@ const getCustomerById = async (req, res) => {
     );
     res.json({ customer: customer.rows[0], transactions: transactions.rows });
   } catch (err) {
-    res.status(500).json({ message: '❌ خطأ في السيرفر', error: err.message });
+    console.error('getCustomerById error:', err && err.message ? err.message : err);
+    res.status(500).json({ message: '❌ خطأ في السيرفر' });
   }
 };
 
 const payDebt = async (req, res) => {
   const { id } = req.params;
   const { amount, note } = req.body;
+
+  if (typeof amount === 'undefined' || isNaN(Number(amount)) || Number(amount) <= 0) {
+    return res.status(400).json({ message: 'قيمة المبلغ غير صحيحة' });
+  }
+
+  const client = await pool.connect();
   try {
-    const customer = await pool.query(
-      'SELECT * FROM customer WHERE id = $1 AND owner_id = $2',
+    await client.query('BEGIN');
+
+    const customerRes = await client.query(
+      'SELECT * FROM customer WHERE id = $1 AND owner_id = $2 FOR UPDATE',
       [id, req.owner.id]
     );
-    if (customer.rows.length === 0) return res.status(404).json({ message: 'الزبون غير موجود' });
+    if (customerRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'الزبون غير موجود' });
+    }
 
-    await pool.query('INSERT INTO debt_payment (customer_id, amount, note) VALUES ($1, $2, $3)', [id, amount, note]);
-    await pool.query('UPDATE customer SET balance = balance + $1 WHERE id = $2', [amount, id]);
+    await client.query(
+      'INSERT INTO debt_payment (customer_id, amount, note, paid_at) VALUES ($1, $2, $3, NOW())',
+      [id, amount, note || null]
+    );
+
+    await client.query('UPDATE customer SET balance = balance + $1 WHERE id = $2', [amount, id]);
 
     let remaining = parseFloat(amount);
-    const pendingTransactions = await pool.query(
-      `SELECT * FROM transaction WHERE customer_id = $1 AND remaining_debt > 0 ORDER BY date ASC, received_at ASC`, [id]
+    const pendingTransactions = await client.query(
+      `SELECT * FROM transaction WHERE customer_id = $1 AND remaining_debt > 0 ORDER BY date ASC, received_at ASC FOR UPDATE`,
+      [id]
     );
 
     for (const tx of pendingTransactions.rows) {
       if (remaining <= 0) break;
-      const debt = parseFloat(tx.remaining_debt);
+      const debt = parseFloat(tx.remaining_debt || 0);
+      if (debt <= 0) continue;
       const pay = Math.min(remaining, debt);
-      const newAmountPaid = parseFloat(tx.amount_paid) + pay;
-      const newStatus = newAmountPaid >= parseFloat(tx.amount_due) ? 'paid' : 'partial';
-      await pool.query(
-        'UPDATE transaction SET amount_paid = $1, payment_status = $2 WHERE id = $3',
+      const newAmountPaid = parseFloat(tx.amount_paid || 0) + pay;
+      const newStatus = newAmountPaid >= parseFloat(tx.amount_due || 0) ? 'paid' : 'partial';
+      await client.query(
+        'UPDATE transaction SET amount_paid = $1, payment_status = $2, remaining_debt = GREATEST((amount_due - $1), 0) WHERE id = $3',
         [newAmountPaid, newStatus, tx.id]
       );
       remaining -= pay;
     }
 
+    await client.query('COMMIT');
+
     const updated = await pool.query('SELECT * FROM customer WHERE id = $1', [id]);
     res.json({ message: '✅ تم تسجيل الدفعة بنجاح', customer: updated.rows[0] });
   } catch (err) {
-    res.status(500).json({ message: '❌ خطأ في السيرفر', error: err.message });
+    await client.query('ROLLBACK');
+    console.error('payDebt error:', err && err.message ? err.message : err);
+    res.status(500).json({ message: '❌ خطأ في السيرفر' });
+  } finally {
+    client.release();
   }
 };
 
@@ -80,42 +106,58 @@ const getDebtHistory = async (req, res) => {
     if (customer.rows.length === 0) return res.status(404).json({ message: 'الزبون غير موجود' });
 
     const debts = await pool.query(
-      `SELECT * FROM debt_payment WHERE customer_id = $1 ORDER BY paid_at DESC`, [id]
+      'SELECT * FROM debt_payment WHERE customer_id = $1 ORDER BY paid_at DESC',
+      [id]
     );
+
+    const totalPaid = debts.rows.reduce((sum, d) => sum + parseFloat(d.amount || 0), 0);
 
     res.json({
       customer: customer.rows[0],
       debt_history: debts.rows,
-      total_paid: debts.rows.reduce((sum, d) => sum + parseFloat(d.amount), 0)
+      total_paid: totalPaid
     });
   } catch (err) {
-    res.status(500).json({ message: '❌ خطأ في السيرفر', error: err.message });
+    console.error('getDebtHistory error:', err && err.message ? err.message : err);
+    res.status(500).json({ message: '❌ خطأ في السيرفر' });
   }
 };
 
 const deleteCustomer = async (req, res) => {
   const { id } = req.params;
+  const client = await pool.connect();
   try {
-    const customer = await pool.query(
-      'SELECT * FROM customer WHERE id = $1 AND owner_id = $2',
+    await client.query('BEGIN');
+
+    const customer = await client.query(
+      'SELECT * FROM customer WHERE id = $1 AND owner_id = $2 FOR UPDATE',
       [id, req.owner.id]
     );
-    if (customer.rows.length === 0) return res.status(404).json({ message: 'الزبون غير موجود' });
+    if (customer.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'الزبون غير موجود' });
+    }
 
-    if (parseFloat(customer.rows[0].balance) < 0) {
-      return res.status(400).json({ 
+    if (parseFloat(customer.rows[0].balance || 0) < 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
         message: '❌ لا يمكن حذف زبون عليه ديون',
         balance: customer.rows[0].balance
       });
     }
 
-    await pool.query('DELETE FROM debt_payment WHERE customer_id = $1', [id]);
-    await pool.query('DELETE FROM transaction WHERE customer_id = $1', [id]);
-    await pool.query('DELETE FROM customer WHERE id = $1', [id]);
+    await client.query('DELETE FROM debt_payment WHERE customer_id = $1', [id]);
+    await client.query('DELETE FROM transaction WHERE customer_id = $1', [id]);
+    await client.query('DELETE FROM customer WHERE id = $1', [id]);
 
+    await client.query('COMMIT');
     res.json({ message: '✅ تم حذف الزبون بنجاح' });
   } catch (err) {
-    res.status(500).json({ message: '❌ خطأ في السيرفر', error: err.message });
+    await client.query('ROLLBACK');
+    console.error('deleteCustomer error:', err && err.message ? err.message : err);
+    res.status(500).json({ message: '❌ خطأ في السيرفر' });
+  } finally {
+    client.release();
   }
 };
 

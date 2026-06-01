@@ -1,76 +1,121 @@
+// src/controllers/transactionController.js
 const pool = require('../config/db');
 
 const createTransaction = async (req, res) => {
-  const { customer_name, product_id, product_name, shelf_id, quantity, amount_paid, payment_status, notes, type } = req.body;
+  const {
+    customer_name,
+    product_id,
+    product_name,
+    shelf_id,
+    quantity = 1,
+    amount_paid = 0,
+    payment_status,
+    notes,
+    type
+  } = req.body;
+
+  if (!req.owner) return res.status(401).json({ message: 'Unauthorized' });
   const owner_id = req.owner.id;
+
+  if (!customer_name || (!product_id && !product_name)) {
+    return res.status(400).json({ message: 'الحقول customer_name و product_id أو product_name مطلوبة' });
+  }
+
+  const qty = Number(quantity);
+  if (Number.isNaN(qty) || qty <= 0) return res.status(400).json({ message: 'الكمية غير صحيحة' });
+
+  const client = await pool.connect();
   try {
+    await client.query('BEGIN');
+
     const transaction_type = type || 'charging';
 
+    // إذا نوع الشحنة يتطلب رف
     if (transaction_type === 'charging') {
-      if (!shelf_id) return res.status(400).json({ message: 'رقم الرف مطلوب لعمليات الشحن' });
-      
-      const shelf = await pool.query('SELECT * FROM shelf WHERE id = $1 AND owner_id = $2', [shelf_id, owner_id]);
-      if (shelf.rows.length === 0) return res.status(404).json({ message: 'الرف غير موجود' });
-
-      if (shelf.rows[0].is_occupied && shelf.rows[0].current_customer_id) {
-        const occupiedCustomer = await pool.query('SELECT name FROM customer WHERE id = $1', [shelf.rows[0].current_customer_id]);
-        const occupiedName = occupiedCustomer.rows[0]?.name;
+      if (!shelf_id) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ message: 'رقم الرف مطلوب لعمليات الشحن' });
+      }
+      // قفل صف الرف للتأكد من عدم تنافس
+      const shelfRes = await client.query(
+        'SELECT * FROM shelf WHERE id = $1 AND owner_id = $2 FOR UPDATE',
+        [shelf_id, owner_id]
+      );
+      if (shelfRes.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ message: 'الرف غير موجود' });
+      }
+      const shelf = shelfRes.rows[0];
+      if (shelf.is_occupied && shelf.current_customer_id) {
+        const occRes = await client.query('SELECT name FROM customer WHERE id = $1', [shelf.current_customer_id]);
+        const occupiedName = occRes.rows[0]?.name;
         if (occupiedName?.toLowerCase() !== customer_name?.toLowerCase()) {
+          await client.query('ROLLBACK');
           return res.status(400).json({ message: `❌ الرف مشغول بزبون آخر: ${occupiedName}` });
         }
       }
     }
 
-    let product;
+    // جلب المنتج والتأكد من ملكيته
+    let productRes;
     if (product_id) {
-      product = await pool.query('SELECT * FROM product WHERE id = $1 AND owner_id = $2', [product_id, owner_id]);
-    } else if (product_name) {
-      product = await pool.query('SELECT * FROM product WHERE LOWER(name) = LOWER($1) AND owner_id = $2', [product_name, owner_id]);
+      productRes = await client.query('SELECT * FROM product WHERE id = $1 AND owner_id = $2 FOR SHARE', [product_id, owner_id]);
+    } else {
+      productRes = await client.query('SELECT * FROM product WHERE LOWER(name) = LOWER($1) AND owner_id = $2 FOR SHARE', [product_name, owner_id]);
     }
-    if (!product || product.rows.length === 0) return res.status(404).json({ message: 'المنتج غير موجود' });
+    if (!productRes || productRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'المنتج غير موجود' });
+    }
+    const product = productRes.rows[0];
 
-    const amount_due = product.rows[0].selling_price * (quantity || 1);
+    const amount_due = Number(product.selling_price || 0) * qty;
 
+    // إيجاد أو إنشاء الزبون مع قفل الصف
     let customer;
-    const existingCustomer = await pool.query(
-      'SELECT * FROM customer WHERE LOWER(name) = LOWER($1) AND owner_id = $2',
+    const existingCustomer = await client.query(
+      'SELECT * FROM customer WHERE LOWER(name) = LOWER($1) AND owner_id = $2 FOR UPDATE',
       [customer_name, owner_id]
     );
     if (existingCustomer.rows.length > 0) {
       customer = existingCustomer.rows[0];
     } else {
-      const similarCustomer = await pool.query(
+      // تحقق من تشابه الأسماء (اختياري)
+      const similarCustomer = await client.query(
         "SELECT * FROM customer WHERE LOWER(name) LIKE LOWER($1) AND owner_id = $2",
         [`%${customer_name.split(' ')[0]}%`, owner_id]
       );
       if (similarCustomer.rows.length > 0 && customer_name.split(' ').length === 1) {
+        await client.query('ROLLBACK');
         return res.status(409).json({
           message: '⚠️ يوجد زبون بنفس الاسم، هل تريد إضافة الاسم الثلاثي للتمييز؟',
           similar: similarCustomer.rows.map(c => c.name)
         });
       }
-      const newCustomer = await pool.query(
-        'INSERT INTO customer (name, owner_id) VALUES ($1, $2) RETURNING *',
-        [customer_name, owner_id]
+      const newCustomer = await client.query(
+        'INSERT INTO customer (name, owner_id, balance, created_at) VALUES ($1, $2, COALESCE($3,0), NOW()) RETURNING *',
+        [customer_name, owner_id, 0]
       );
       customer = newCustomer.rows[0];
     }
 
-    let final_amount_paid = amount_paid || 0;
+    // حساب الدفع النهائي بناءً على payment_status
+    let final_amount_paid = Number(amount_paid || 0);
     let final_payment_status = payment_status || 'debt';
 
+    // افتراض: balance موجبة تعني رصيد للعميل يمكن استخدامه للدفع
     if (payment_status === 'balance') {
-      const customerData = await pool.query('SELECT balance FROM customer WHERE id = $1', [customer.id]);
-      const currentBalance = parseFloat(customerData.rows[0].balance);
+      const custBalRes = await client.query('SELECT balance FROM customer WHERE id = $1 FOR UPDATE', [customer.id]);
+      const currentBalance = parseFloat(custBalRes.rows[0].balance || 0);
 
       if (currentBalance >= amount_due) {
         final_amount_paid = amount_due;
         final_payment_status = 'paid';
-        await pool.query('UPDATE customer SET balance = balance - $1 WHERE id = $2', [amount_due, customer.id]);
+        await client.query('UPDATE customer SET balance = balance - $1 WHERE id = $2', [amount_due, customer.id]);
       } else if (currentBalance > 0) {
         final_amount_paid = currentBalance;
         final_payment_status = 'partial';
-        await pool.query('UPDATE customer SET balance = 0 WHERE id = $1', [customer.id]);
+        await client.query('UPDATE customer SET balance = 0 WHERE id = $1', [customer.id]);
       } else {
         final_amount_paid = 0;
         final_payment_status = 'debt';
@@ -79,47 +124,89 @@ const createTransaction = async (req, res) => {
 
     const final_shelf_id = transaction_type === 'charging' ? shelf_id : null;
     const final_status = transaction_type === 'sale' ? 'delivered' : 'pending';
+    const deliveredAtExpr = transaction_type === 'sale' ? 'NOW()' : 'NULL';
+    const remaining_debt = Math.max(amount_due - final_amount_paid, 0);
 
-    const result = await pool.query(
-      `INSERT INTO transaction (customer_id, product_id, shelf_id, quantity, amount_due, amount_paid, payment_status, notes, type, status, delivered_at, owner_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, ${transaction_type === 'sale' ? 'NOW()' : 'NULL'}, $11) RETURNING *`,
-      [customer.id, product.rows[0].id, final_shelf_id, quantity || 1, amount_due, final_amount_paid, final_payment_status, notes, transaction_type, final_status, owner_id]
-    );
+    // إدراج العملية مع حفظ remaining_debt
+    const insertQuery = `
+      INSERT INTO transaction
+      (customer_id, product_id, shelf_id, quantity, amount_due, amount_paid, remaining_debt, payment_status, notes, type, status, delivered_at, owner_id)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, ${deliveredAtExpr}, $12)
+      RETURNING *
+    `;
+    const insertValues = [
+      customer.id,
+      product.id,
+      final_shelf_id,
+      qty,
+      amount_due,
+      final_amount_paid,
+      remaining_debt,
+      final_payment_status,
+      notes || null,
+      transaction_type,
+      final_status,
+      owner_id
+    ];
 
-    const remaining_debt = amount_due - final_amount_paid;
+    const result = await client.query(insertQuery, insertValues);
+
+    // إذا تبقى دين و لم يكن الدفع من الرصيد، نزيد دين العميل (أو نقلص رصيده حسب منطقك)
     if (remaining_debt > 0 && payment_status !== 'balance') {
-      await pool.query('UPDATE customer SET balance = balance - $1 WHERE id = $2', [remaining_debt, customer.id]);
+      // هنا نفترض أن balance يمثل رصيد العميل (زيادة موجبة = رصيد للعميل)
+      // إذا أردت العكس (balance سالب = دين) عدّل العملية وفق ذلك
+      await client.query('UPDATE customer SET balance = balance - $1 WHERE id = $2', [remaining_debt, customer.id]);
     }
 
-    if (transaction_type === 'charging' && shelf_id) {
-      await pool.query('UPDATE shelf SET is_occupied = true, current_customer_id = $1 WHERE id = $2', [customer.id, shelf_id]);
+    // تحديث حالة الرف إذا كانت عملية شحن
+    if (transaction_type === 'charging' && final_shelf_id) {
+      await client.query('UPDATE shelf SET is_occupied = true, current_customer_id = $1 WHERE id = $2', [customer.id, final_shelf_id]);
     }
+
+    await client.query('COMMIT');
 
     res.status(201).json({ message: '✅ تم تسجيل العملية بنجاح', transaction: result.rows[0], customer });
   } catch (err) {
-    res.status(500).json({ message: '❌ خطأ في السيرفر', error: err.message });
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('createTransaction error:', err && err.message ? err.message : err);
+    res.status(500).json({ message: '❌ خطأ في السيرفر' });
+  } finally {
+    client.release();
   }
 };
 
+// بقية الدوال مع تحسينات بسيطة: قفل الصفوف عند التحديث والتأكد من owner_id
 const deliverTransaction = async (req, res) => {
   const { id } = req.params;
+  if (!req.owner) return res.status(401).json({ message: 'Unauthorized' });
+  const owner_id = req.owner.id;
+  const client = await pool.connect();
   try {
-    const transaction = await pool.query(
-      'SELECT * FROM transaction WHERE id = $1 AND owner_id = $2',
-      [id, req.owner.id]
-    );
-    if (transaction.rows.length === 0) return res.status(404).json({ message: 'العملية غير موجودة' });
-    await pool.query('UPDATE transaction SET status = $1, delivered_at = NOW() WHERE id = $2', ['delivered', id]);
-    if (transaction.rows[0].shelf_id) {
-      await pool.query('UPDATE shelf SET is_occupied = false, current_customer_id = NULL WHERE id = $1', [transaction.rows[0].shelf_id]);
+    await client.query('BEGIN');
+    const txRes = await client.query('SELECT * FROM transaction WHERE id = $1 AND owner_id = $2 FOR UPDATE', [id, owner_id]);
+    if (txRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'العملية غير موجودة' });
     }
+    const tx = txRes.rows[0];
+    await client.query('UPDATE transaction SET status = $1, delivered_at = NOW() WHERE id = $2', ['delivered', id]);
+    if (tx.shelf_id) {
+      await client.query('UPDATE shelf SET is_occupied = false, current_customer_id = NULL WHERE id = $1', [tx.shelf_id]);
+    }
+    await client.query('COMMIT');
     res.json({ message: '✅ تم تسليم الجهاز بنجاح' });
   } catch (err) {
-    res.status(500).json({ message: '❌ خطأ في السيرفر', error: err.message });
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('deliverTransaction error:', err && err.message ? err.message : err);
+    res.status(500).json({ message: '❌ خطأ في السيرفر' });
+  } finally {
+    client.release();
   }
 };
 
+// بقية الدوال للقراءة والحذف حافظت عليها لكن أضفت تحقق owner_id في الاستعلامات
 const getAllTransactions = async (req, res) => {
+  if (!req.owner) return res.status(401).json({ message: 'Unauthorized' });
   try {
     const result = await pool.query(
       `SELECT t.*, c.name as customer_name, p.name as product_name, s.shelf_number
@@ -133,11 +220,13 @@ const getAllTransactions = async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    res.status(500).json({ message: '❌ خطأ في السيرفر', error: err.message });
+    console.error('getAllTransactions error:', err && err.message ? err.message : err);
+    res.status(500).json({ message: '❌ خطأ في السيرفر' });
   }
 };
 
 const getTodayTransactions = async (req, res) => {
+  if (!req.owner) return res.status(401).json({ message: 'Unauthorized' });
   try {
     const result = await pool.query(
       `SELECT t.*, c.name as customer_name, p.name as product_name, s.shelf_number
@@ -151,11 +240,13 @@ const getTodayTransactions = async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    res.status(500).json({ message: '❌ خطأ في السيرفر', error: err.message });
+    console.error('getTodayTransactions error:', err && err.message ? err.message : err);
+    res.status(500).json({ message: '❌ خطأ في السيرفر' });
   }
 };
 
 const getWeekTransactions = async (req, res) => {
+  if (!req.owner) return res.status(401).json({ message: 'Unauthorized' });
   try {
     const result = await pool.query(
       `SELECT t.*, c.name as customer_name, p.name as product_name, s.shelf_number
@@ -169,11 +260,13 @@ const getWeekTransactions = async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    res.status(500).json({ message: '❌ خطأ في السيرفر', error: err.message });
+    console.error('getWeekTransactions error:', err && err.message ? err.message : err);
+    res.status(500).json({ message: '❌ خطأ في السيرفر' });
   }
 };
 
 const getMonthTransactions = async (req, res) => {
+  if (!req.owner) return res.status(401).json({ message: 'Unauthorized' });
   try {
     const result = await pool.query(
       `SELECT t.*, c.name as customer_name, p.name as product_name, s.shelf_number
@@ -187,11 +280,13 @@ const getMonthTransactions = async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    res.status(500).json({ message: '❌ خطأ في السيرفر', error: err.message });
+    console.error('getMonthTransactions error:', err && err.message ? err.message : err);
+    res.status(500).json({ message: '❌ خطأ في السيرفر' });
   }
 };
 
 const getRangeTransactions = async (req, res) => {
+  if (!req.owner) return res.status(401).json({ message: 'Unauthorized' });
   const { from, to } = req.query;
   if (!from || !to) return res.status(400).json({ message: 'يجب تحديد تاريخ البداية والنهاية' });
   try {
@@ -207,35 +302,44 @@ const getRangeTransactions = async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    res.status(500).json({ message: '❌ خطأ في السيرفر', error: err.message });
+    console.error('getRangeTransactions error:', err && err.message ? err.message : err);
+    res.status(500).json({ message: '❌ خطأ في السيرفر' });
   }
 };
 
 const deleteTransaction = async (req, res) => {
+  if (!req.owner) return res.status(401).json({ message: 'Unauthorized' });
   const { id } = req.params;
+  const client = await pool.connect();
   try {
-    const transaction = await pool.query(
-      'SELECT * FROM transaction WHERE id = $1 AND owner_id = $2',
-      [id, req.owner.id]
-    );
-    if (transaction.rows.length === 0) return res.status(404).json({ message: 'العملية غير موجودة' });
-    const tx = transaction.rows[0];
-    if (parseFloat(tx.remaining_debt) > 0) {
-      await pool.query('UPDATE customer SET balance = balance + $1 WHERE id = $2', [tx.remaining_debt, tx.customer_id]);
+    await client.query('BEGIN');
+    const txRes = await client.query('SELECT * FROM transaction WHERE id = $1 AND owner_id = $2 FOR UPDATE', [id, req.owner.id]);
+    if (txRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'العملية غير موجودة' });
+    }
+    const tx = txRes.rows[0];
+    if (parseFloat(tx.remaining_debt || 0) > 0) {
+      await client.query('UPDATE customer SET balance = balance + $1 WHERE id = $2', [tx.remaining_debt, tx.customer_id]);
     }
     if (tx.status === 'pending' && tx.shelf_id) {
-      await pool.query('UPDATE shelf SET is_occupied = false, current_customer_id = NULL WHERE id = $1', [tx.shelf_id]);
+      await client.query('UPDATE shelf SET is_occupied = false, current_customer_id = NULL WHERE id = $1', [tx.shelf_id]);
     }
-    await pool.query('DELETE FROM transaction WHERE id = $1', [id]);
+    await client.query('DELETE FROM transaction WHERE id = $1', [id]);
+    await client.query('COMMIT');
     res.json({ message: '✅ تم حذف العملية بنجاح' });
   } catch (err) {
-    res.status(500).json({ message: '❌ خطأ في السيرفر', error: err.message });
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('deleteTransaction error:', err && err.message ? err.message : err);
+    res.status(500).json({ message: '❌ خطأ في السيرفر' });
+  } finally {
+    client.release();
   }
 };
 
-module.exports = { 
-  createTransaction, 
-  deliverTransaction, 
+module.exports = {
+  createTransaction,
+  deliverTransaction,
   getAllTransactions,
   getTodayTransactions,
   getWeekTransactions,

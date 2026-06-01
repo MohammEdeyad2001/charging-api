@@ -1,6 +1,15 @@
+// src/routes/products.js
 const express = require('express');
 const router = express.Router();
-const { getAllProducts, addProduct, updateProduct, deleteProduct } = require('../controllers/productController');
+const auth = require('../middleware/auth');
+const {
+  getAllProducts,
+  addProduct,
+  updateProduct,
+  deleteProduct
+} = require('../controllers/productController');
+
+router.use(auth);
 
 router.get('/', getAllProducts);
 router.post('/', addProduct);

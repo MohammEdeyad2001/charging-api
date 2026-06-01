@@ -1,6 +1,16 @@
+// src/routes/customers.js
 const express = require('express');
 const router = express.Router();
-const { getAllCustomers, getCustomerById, payDebt, getDebtHistory, deleteCustomer } = require('../controllers/customerController');
+const auth = require('../middleware/auth');
+const {
+  getAllCustomers,
+  getCustomerById,
+  payDebt,
+  getDebtHistory,
+  deleteCustomer
+} = require('../controllers/customerController');
+
+router.use(auth);
 
 router.get('/', getAllCustomers);
 router.get('/:id', getCustomerById);

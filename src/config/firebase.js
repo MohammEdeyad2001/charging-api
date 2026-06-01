@@ -1,3 +1,4 @@
+// src/config/firebase.js
 const admin = require('firebase-admin');
 
 let serviceAccount;
@@ -5,13 +6,14 @@ let serviceAccount;
 try {
   let privateKey;
 
-  // إذا كان المفتاح مخزن بـ Base64 في .env
   if (process.env.FIREBASE_PRIVATE_KEY_BASE64) {
     privateKey = Buffer.from(process.env.FIREBASE_PRIVATE_KEY_BASE64, 'base64').toString('utf-8');
-  } 
-  // إذا كان المفتاح مخزن كسطر واحد مع \n
-  else if (process.env.FIREBASE_PRIVATE_KEY) {
+  } else if (process.env.FIREBASE_PRIVATE_KEY) {
     privateKey = process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n');
+  }
+
+  if (!privateKey) {
+    throw new Error('Firebase private key not provided in environment variables');
   }
 
   serviceAccount = {
@@ -31,6 +33,7 @@ try {
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount)
     });
+    console.log('✅ Firebase admin initialized');
   }
 } catch (error) {
   console.error('❌ خطأ في تهيئة Firebase:', error.message);

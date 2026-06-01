@@ -1,35 +1,31 @@
-const express = require('express');
-const dotenv = require('dotenv');
-const cors = require('cors');
-const pool = require('./config/db');
-const authMiddleware = require('./middleware/auth');
-require('./config/firebase');
+// src/server.js
+require('dotenv').config(); // يجب تحميل المتغيرات البيئية أولاً
 
-dotenv.config();
+const express = require('express');
+const cors = require('cors');
+
+// تهيئات تعتمد على المتغيرات البيئية يجب استدعاؤها بعد dotenv.config()
+const pool = require('./config/db');
+require('./config/firebase'); // تهيئة firebase-admin
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const authRoutes = require('./routes/auth');
-const customerRoutes = require('./routes/customers');
-const transactionRoutes = require('./routes/transactions');
-const dashboardRoutes = require('./routes/dashboard');
-const productRoutes = require('./routes/products');
-const shelvesRoutes = require('./routes/shelves');
+// Routes
+// اختر نمط مسارات موحّد (هنا استخدمت /api/*)
+app.use('/api/auth', require('./routes/auth'));
+app.use('/api/products', require('./routes/products'));
+app.use('/api/customers', require('./routes/customers'));
+app.use('/api/shelves', require('./routes/shelves'));
+app.use('/api/transactions', require('./routes/transactions'));
+app.use('/api/dashboard', require('./routes/dashboard'));
 
-app.use('/auth', authRoutes);
-app.use('/customers', authMiddleware, customerRoutes);
-app.use('/transactions', authMiddleware, transactionRoutes);
-app.use('/dashboard', authMiddleware, dashboardRoutes);
-app.use('/products', authMiddleware, productRoutes);
-app.use('/shelves', authMiddleware, shelvesRoutes);
+// 404 handler
+app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 
 const PORT = process.env.PORT || 3000;
 
-// 💡 قمنا بإزالة دالة runMigrations من هنا لتجنب أي تعارض في السيرفر الخارجي
-
 app.listen(PORT, () => {
   console.log(`✅ السيرفر يعمل بنجاح على المنفذ ${PORT}`);
-  console.log(`🚀 نظام نقطة الشحن جاهز وعامل على الـ Production!`);
 });
