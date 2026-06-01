@@ -10,13 +10,18 @@ router.post('/signup', async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ error: 'البريد الإلكتروني وكلمة المرور مطلوبة' });
+    // التحقق من المدخلات
+    if (!email || typeof email !== 'string' || !email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) {
+      return res.status(400).json({ error: 'البريد الإلكتروني غير صحيح' });
+    }
+
+    if (!password || typeof password !== 'string' || password.length < 6) {
+      return res.status(400).json({ error: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' });
     }
 
     await admin.auth().createUser({
-      email,
-      password
+      email: email.trim(),
+      password: password
     });
 
     res.json({
@@ -34,15 +39,19 @@ router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ error: 'البريد الإلكتروني وكلمة المرور مطلوبة' });
+    if (!email || typeof email !== 'string') {
+      return res.status(400).json({ error: 'البريد الإلكتروني مطلوب' });
+    }
+
+    if (!password || typeof password !== 'string') {
+      return res.status(400).json({ error: 'كلمة المرور مطلوبة' });
     }
 
     // استخدام Firebase REST API للتحقق من البيانات والحصول على ID Token
     const response = await axios.post(
       `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_WEB_API_KEY}`,
       {
-        email: email,
+        email: email.trim(),
         password: password,
         returnSecureToken: true
       }
@@ -61,7 +70,7 @@ router.post('/login', async (req, res) => {
   } catch (error) {
     console.error('Login error:', error.response?.data || error.message);
     res.status(401).json({
-      error: error.response?.data?.error?.message || error.message
+      error: error.response?.data?.error?.message || 'فشل تسجيل الدخول'
     });
   }
 });
