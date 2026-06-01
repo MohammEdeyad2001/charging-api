@@ -5,11 +5,13 @@ let serviceAccount;
 try {
   let privateKey;
 
-  // إذا كان private key مشفر بـ base64
+  // إذا كان المفتاح مخزن بـ Base64 في .env
   if (process.env.FIREBASE_PRIVATE_KEY_BASE64) {
     privateKey = Buffer.from(process.env.FIREBASE_PRIVATE_KEY_BASE64, 'base64').toString('utf-8');
-  } else if (process.env.FIREBASE_PRIVATE_KEY) {
-    privateKey = (process.env.FIREBASE_PRIVATE_KEY).split('\\n').join('\n');
+  } 
+  // إذا كان المفتاح مخزن كسطر واحد مع \n
+  else if (process.env.FIREBASE_PRIVATE_KEY) {
+    privateKey = process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n');
   }
 
   serviceAccount = {
