@@ -1,21 +1,30 @@
 const path = require('path');
 const pool = require('../config/db');
 
-const admin = require(path.join(__dirname, '../firebase'));
+const admin = require(path.join(__dirname, '../config/firebase'));
 
 const authMiddleware = async (req, res, next) => {
   const authHeader = req.headers.authorization;
 
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  if (!authHeader || typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ message: '❌ غير مصرح لك بالدخول، التوكن مفقود' });
   }
 
-  const token = authHeader.split(' ')[1];
+  const parts = authHeader.split(' ');
+  if (parts.length !== 2) {
+    return res.status(401).json({ message: '❌ صيغة التوكن غير صحيحة' });
+  }
+
+  const token = parts[1];
 
   try {
     const decodedToken = await admin.auth().verifyIdToken(token);
     const firebaseUid = decodedToken.uid;
     const email = decodedToken.email;
+
+    if (!firebaseUid || !email) {
+      return res.status(401).json({ message: '❌ التوكن لا يحتوي على بيانات مطلوبة' });
+    }
 
     // البحث عن owner بـ firebase_uid أو email
     let ownerResult = await pool.query(
@@ -29,7 +38,7 @@ const authMiddleware = async (req, res, next) => {
 
       const newOwner = await pool.query(
         'INSERT INTO owner (name, email, firebase_uid, password, created_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING id, name, email, firebase_uid',
-        [name, email, firebaseUid, 'firebase_auth']
+        [name.slice(0, 255), email.slice(0, 255), firebaseUid, 'firebase_auth']
       );
       ownerResult = { rows: [newOwner.rows[0]] };
     } else {
