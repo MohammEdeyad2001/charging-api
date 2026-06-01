@@ -3,6 +3,7 @@ const dotenv = require('dotenv');
 const cors = require('cors');
 const pool = require('./config/db');
 const authMiddleware = require('./middleware/auth');
+require('./config/firebase');
 
 dotenv.config();
 
@@ -25,7 +26,10 @@ app.use('/products', authMiddleware, productRoutes);
 app.use('/shelves', authMiddleware, shelvesRoutes);
 
 const PORT = process.env.PORT || 3000;
+
+// 💡 قمنا بإزالة دالة runMigrations من هنا لتجنب أي تعارض في السيرفر الخارجي
+
 app.listen(PORT, () => {
   console.log(`✅ السيرفر يعمل بنجاح على المنفذ ${PORT}`);
-  console.log(`🚀 نظام نقطة الشحن جاهز!`);
+  console.log(`🚀 نظام نقطة الشحن جاهز وعامل على الـ Production!`);
 });
