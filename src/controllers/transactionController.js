@@ -127,11 +127,11 @@ const createTransaction = async (req, res) => {
     const deliveredAtExpr = transaction_type === 'sale' ? 'NOW()' : 'NULL';
     const remaining_debt = Math.max(amount_due - final_amount_paid, 0);
 
-    // إدراج العملية مع حفظ remaining_debt
+    // إدراج العملية (remaining_debt عمود محسوب تلقائياً - لا يُدرج يدوياً)
     const insertQuery = `
       INSERT INTO transaction
-      (customer_id, product_id, shelf_id, quantity, amount_due, amount_paid, remaining_debt, payment_status, notes, type, status, delivered_at, owner_id)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, ${deliveredAtExpr}, $12)
+      (customer_id, product_id, shelf_id, quantity, amount_due, amount_paid, payment_status, notes, type, status, delivered_at, owner_id)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, ${deliveredAtExpr}, $11)
       RETURNING *
     `;
     const insertValues = [
@@ -141,7 +141,6 @@ const createTransaction = async (req, res) => {
       qty,
       amount_due,
       final_amount_paid,
-      remaining_debt,
       final_payment_status,
       notes || null,
       transaction_type,
@@ -151,10 +150,8 @@ const createTransaction = async (req, res) => {
 
     const result = await client.query(insertQuery, insertValues);
 
-    // إذا تبقى دين و لم يكن الدفع من الرصيد، نزيد دين العميل (أو نقلص رصيده حسب منطقك)
+    // إذا تبقى دين و لم يكن الدفع من الرصيد، نخصم من رصيد العميل (يصبح سالباً = دين)
     if (remaining_debt > 0 && payment_status !== 'balance') {
-      // هنا نفترض أن balance يمثل رصيد العميل (زيادة موجبة = رصيد للعميل)
-      // إذا أردت العكس (balance سالب = دين) عدّل العملية وفق ذلك
       await client.query('UPDATE customer SET balance = balance - $1 WHERE id = $2', [remaining_debt, customer.id]);
     }
 
@@ -175,7 +172,6 @@ const createTransaction = async (req, res) => {
   }
 };
 
-// بقية الدوال مع تحسينات بسيطة: قفل الصفوف عند التحديث والتأكد من owner_id
 const deliverTransaction = async (req, res) => {
   const { id } = req.params;
   if (!req.owner) return res.status(401).json({ message: 'Unauthorized' });
@@ -204,7 +200,6 @@ const deliverTransaction = async (req, res) => {
   }
 };
 
-// بقية الدوال للقراءة والحذف حافظت عليها لكن أضفت تحقق owner_id في الاستعلامات
 const getAllTransactions = async (req, res) => {
   if (!req.owner) return res.status(401).json({ message: 'Unauthorized' });
   try {
