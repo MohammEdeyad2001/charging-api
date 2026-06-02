@@ -6,12 +6,14 @@ const {
   getAllShelves,
   addShelf,
   addMultipleShelves,
-  deleteShelf
+  deleteShelf,
+  deleteShelfByNumber
 } = require('../controllers/shelfController');
 
 router.use(auth);
 
 router.post('/bulk', addMultipleShelves);
+router.delete('/by-number/:number', deleteShelfByNumber);
 router.get('/', getAllShelves);
 router.post('/', addShelf);
 router.delete('/:id', deleteShelf);

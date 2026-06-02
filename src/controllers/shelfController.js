@@ -67,6 +67,29 @@ const deleteShelf = async (req, res) => {
   }
 };
 
+const deleteShelfByNumber = async (req, res) => {
+  if (!req.owner) return res.status(401).json({ message: 'Unauthorized' });
+
+  const { number } = req.params;
+  try {
+    const shelf = await pool.query(
+      'SELECT * FROM shelf WHERE shelf_number = $1 AND owner_id = $2',
+      [number.toString(), req.owner.id]
+    );
+    if (shelf.rows.length === 0) {
+      return res.status(404).json({ message: 'الرف غير موجود' });
+    }
+    if (shelf.rows[0].is_occupied) {
+      return res.status(400).json({ message: '❌ لا يمكن حذف رف مشغول' });
+    }
+    await pool.query('DELETE FROM shelf WHERE id = $1 AND owner_id = $2', [shelf.rows[0].id, req.owner.id]);
+    res.json({ message: '✅ تم حذف الرف بنجاح' });
+  } catch (err) {
+    console.error('deleteShelfByNumber error:', err && err.message ? err.message : err);
+    res.status(500).json({ message: '❌ خطأ في السيرفر' });
+  }
+};
+
 const addMultipleShelves = async (req, res) => {
   if (!req.owner) return res.status(401).json({ message: 'Unauthorized' });
 
@@ -104,4 +127,4 @@ const addMultipleShelves = async (req, res) => {
   }
 };
 
-module.exports = { getAllShelves, addShelf, addMultipleShelves, deleteShelf };
+module.exports = { getAllShelves, addShelf, addMultipleShelves, deleteShelf, deleteShelfByNumber };
