@@ -6,7 +6,7 @@ const createTransaction = async (req, res) => {
     customer_name,
     product_id,
     product_name,
-    shelf_id,
+    shelf_number,
     quantity = 1,
     amount_paid = 0,
     payment_status,
@@ -29,23 +29,25 @@ const createTransaction = async (req, res) => {
     await client.query('BEGIN');
 
     const transaction_type = type || 'charging';
+    let resolved_shelf_id = null;
 
-    // إذا نوع الشحنة يتطلب رف
+    // إذا نوع الشحنة يتطلب رف (نبحث عنه برقم الرف)
     if (transaction_type === 'charging') {
-      if (!shelf_id) {
+      if (!shelf_number) {
         await client.query('ROLLBACK');
         return res.status(400).json({ message: 'رقم الرف مطلوب لعمليات الشحن' });
       }
-      // قفل صف الرف للتأكد من عدم تنافس
+      // قفل صف الرف للتأكد من عدم تنافس (البحث برقم الرف + المالك)
       const shelfRes = await client.query(
-        'SELECT * FROM shelf WHERE id = $1 AND owner_id = $2 FOR UPDATE',
-        [shelf_id, owner_id]
+        'SELECT * FROM shelf WHERE shelf_number = $1 AND owner_id = $2 FOR UPDATE',
+        [shelf_number.toString(), owner_id]
       );
       if (shelfRes.rows.length === 0) {
         await client.query('ROLLBACK');
-        return res.status(404).json({ message: 'الرف غير موجود' });
+        return res.status(404).json({ message: 'رقم الرف غير موجود' });
       }
       const shelf = shelfRes.rows[0];
+      resolved_shelf_id = shelf.id;
       if (shelf.is_occupied && shelf.current_customer_id) {
         const occRes = await client.query('SELECT name FROM customer WHERE id = $1', [shelf.current_customer_id]);
         const occupiedName = occRes.rows[0]?.name;
@@ -122,7 +124,7 @@ const createTransaction = async (req, res) => {
       }
     }
 
-    const final_shelf_id = transaction_type === 'charging' ? shelf_id : null;
+    const final_shelf_id = transaction_type === 'charging' ? resolved_shelf_id : null;
     const final_status = transaction_type === 'sale' ? 'delivered' : 'pending';
     const deliveredAtExpr = transaction_type === 'sale' ? 'NOW()' : 'NULL';
     const remaining_debt = Math.max(amount_due - final_amount_paid, 0);
