@@ -77,7 +77,7 @@ const payDebt = async (req, res) => {
       const newAmountPaid = parseFloat(tx.amount_paid || 0) + pay;
       const newStatus = newAmountPaid >= parseFloat(tx.amount_due || 0) ? 'paid' : 'partial';
       await client.query(
-        'UPDATE transaction SET amount_paid = $1, payment_status = $2, remaining_debt = GREATEST((amount_due - $1), 0) WHERE id = $3',
+        'UPDATE transaction SET amount_paid = $1, payment_status = $2 WHERE id = $3',
         [newAmountPaid, newStatus, tx.id]
       );
       remaining -= pay;
