@@ -160,5 +160,22 @@ const deleteCustomer = async (req, res) => {
     client.release();
   }
 };
+const getAllPayments = async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT dp.*, c.name as customer_name
+       FROM debt_payment dp
+       JOIN customer c ON dp.customer_id = c.id
+       WHERE c.owner_id = $1
+       ORDER BY dp.paid_at DESC`,
+      [req.owner.id]
+    );
+    const totalPaid = result.rows.reduce((sum, d) => sum + parseFloat(d.amount || 0), 0);
+    res.json({ payments: result.rows, total_paid: totalPaid, count: result.rows.length });
+  } catch (err) {
+    console.error('getAllPayments error:', err && err.message ? err.message : err);
+    res.status(500).json({ message: '❌ خطأ في السيرفر' });
+  }
+};
 
-module.exports = { getAllCustomers, getCustomerById, payDebt, getDebtHistory, deleteCustomer };
+module.exports = { getAllCustomers, getCustomerById, payDebt, getDebtHistory, deleteCustomer, getAllPayments };

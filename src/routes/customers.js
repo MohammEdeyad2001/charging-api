@@ -7,12 +7,14 @@ const {
   getCustomerById,
   payDebt,
   getDebtHistory,
-  deleteCustomer
+  deleteCustomer,
+  getAllPayments
 } = require('../controllers/customerController');
 
 router.use(auth);
 
 router.get('/', getAllCustomers);
+router.get('/payments/all', getAllPayments);
 router.get('/:id', getCustomerById);
 router.put('/:id/pay', payDebt);
 router.get('/:id/debt-history', getDebtHistory);
