@@ -33,10 +33,17 @@ const getDashboard = async (req, res) => {
          WHERE owner_id = $1 AND date = CURRENT_DATE`,
         [owner_id]
       ),
+      // الرفوف المشغولة + بيانات العملية النشطة على كل رف (لتمكين زر التسليم)
       pool.query(
-        `SELECT s.shelf_number, c.name AS customer_name
+        `SELECT s.shelf_number, c.name AS customer_name, t.id AS transaction_id,
+                t.amount_due, t.amount_paid, t.remaining_debt, t.payment_status,
+                p.name AS product_name, t.received_at
          FROM shelf s
          LEFT JOIN customer c ON s.current_customer_id = c.id
+         LEFT JOIN transaction t ON t.shelf_id = s.id
+              AND t.owner_id = s.owner_id
+              AND (t.status IS DISTINCT FROM 'delivered')
+         LEFT JOIN product p ON t.product_id = p.id
          WHERE s.owner_id = $1 AND s.is_occupied = true
          ORDER BY CASE WHEN s.shelf_number ~ '^[0-9]+$' THEN CAST(s.shelf_number AS INTEGER) ELSE NULL END, s.shelf_number
          LIMIT 200`,
