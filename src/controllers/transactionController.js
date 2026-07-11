@@ -1,5 +1,18 @@
 // src/controllers/transactionController.js
+// المنطق المحاسبي الموحّد:
+//   حساب العميل (balance) هو المصدر الوحيد للحقيقة.
+//   كل عملية: balance -= السعر المستحق، ثم balance += المدفوع الآن.
+//   الرصيد الموجب يُستهلك تلقائياً، والسالب يعني دين — بلا حالات خاصة.
+//   payment_status يُشتق تلقائياً (لا يُدخله المستخدم): paid / partial / debt.
+//   التسليم حدث لوجستي (تحرير الرف) + يقبل دفعة اختيارية لحظة التسليم.
 const pool = require('../config/db');
+
+// اشتقاق حالة الدفع تلقائياً من المبالغ
+const deriveStatus = (due, paid) => {
+  if (paid >= due) return 'paid';
+  if (paid > 0) return 'partial';
+  return 'debt';
+};
 
 const createTransaction = async (req, res) => {
   const {
@@ -9,7 +22,6 @@ const createTransaction = async (req, res) => {
     shelf_number,
     quantity = 1,
     amount_paid = 0,
-    payment_status,
     notes,
     type
   } = req.body;
@@ -24,6 +36,11 @@ const createTransaction = async (req, res) => {
   const qty = Number(quantity);
   if (Number.isNaN(qty) || qty <= 0) return res.status(400).json({ message: 'الكمية غير صحيحة' });
 
+  const paidNow = Number(amount_paid || 0);
+  if (Number.isNaN(paidNow) || paidNow < 0) {
+    return res.status(400).json({ message: 'قيمة المبلغ المدفوع غير صحيحة' });
+  }
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -31,13 +48,13 @@ const createTransaction = async (req, res) => {
     const transaction_type = type || 'charging';
     let resolved_shelf_id = null;
 
-    // إذا نوع الشحنة يتطلب رف (نبحث عنه برقم الرف)
+    // إذا نوع العملية شحن: الرف مطلوب
     if (transaction_type === 'charging') {
       if (!shelf_number) {
         await client.query('ROLLBACK');
         return res.status(400).json({ message: 'رقم الرف مطلوب لعمليات الشحن' });
       }
-      // قفل صف الرف للتأكد من عدم تنافس (البحث برقم الرف + المالك)
+      // قفل صف الرف للتأكد من عدم تنافس
       const shelfRes = await client.query(
         'SELECT * FROM shelf WHERE shelf_number = $1 AND owner_id = $2 FOR UPDATE',
         [shelf_number.toString(), owner_id]
@@ -48,6 +65,7 @@ const createTransaction = async (req, res) => {
       }
       const shelf = shelfRes.rows[0];
       resolved_shelf_id = shelf.id;
+
       if (shelf.is_occupied && shelf.current_customer_id) {
         const occRes = await client.query('SELECT name FROM customer WHERE id = $1', [shelf.current_customer_id]);
         const occupiedName = occRes.rows[0]?.name;
@@ -70,7 +88,6 @@ const createTransaction = async (req, res) => {
       return res.status(404).json({ message: 'المنتج غير موجود' });
     }
     const product = productRes.rows[0];
-
     const amount_due = Number(product.selling_price || 0) * qty;
 
     // إيجاد أو إنشاء الزبون مع قفل الصف
@@ -95,41 +112,28 @@ const createTransaction = async (req, res) => {
         });
       }
       const newCustomer = await client.query(
-        'INSERT INTO customer (name, owner_id, balance, created_at) VALUES ($1, $2, COALESCE($3,0), NOW()) RETURNING *',
-        [customer_name, owner_id, 0]
+        'INSERT INTO customer (name, owner_id, balance, created_at) VALUES ($1, $2, 0, NOW()) RETURNING *',
+        [customer_name, owner_id]
       );
       customer = newCustomer.rows[0];
     }
 
-    // حساب الدفع النهائي بناءً على payment_status
-    let final_amount_paid = Number(amount_paid || 0);
-    let final_payment_status = payment_status || 'debt';
+    // === المنطق المحاسبي الموحّد ===
+    // حساب العميل: يُخصم منه المستحق ويُضاف المدفوع الآن.
+    // (الرصيد الموجب يُستهلك تلقائياً، والناقص يتراكم ديناً بالسالب)
+    await client.query(
+      'UPDATE customer SET balance = balance - $1 + $2 WHERE id = $3',
+      [amount_due, paidNow, customer.id]
+    );
 
-    // افتراض: balance موجبة تعني رصيد للعميل يمكن استخدامه للدفع
-    if (payment_status === 'balance') {
-      const custBalRes = await client.query('SELECT balance FROM customer WHERE id = $1 FOR UPDATE', [customer.id]);
-      const currentBalance = parseFloat(custBalRes.rows[0].balance || 0);
-
-      if (currentBalance >= amount_due) {
-        final_amount_paid = amount_due;
-        final_payment_status = 'paid';
-        await client.query('UPDATE customer SET balance = balance - $1 WHERE id = $2', [amount_due, customer.id]);
-      } else if (currentBalance > 0) {
-        final_amount_paid = currentBalance;
-        final_payment_status = 'partial';
-        await client.query('UPDATE customer SET balance = 0 WHERE id = $1', [customer.id]);
-      } else {
-        final_amount_paid = 0;
-        final_payment_status = 'debt';
-      }
-    }
+    // حالة الدفع تُشتق تلقائياً — لا يُدخلها المستخدم
+    const final_payment_status = deriveStatus(amount_due, paidNow);
 
     const final_shelf_id = transaction_type === 'charging' ? resolved_shelf_id : null;
     const final_status = transaction_type === 'sale' ? 'delivered' : 'pending';
     const deliveredAtExpr = transaction_type === 'sale' ? 'NOW()' : 'NULL';
-    const remaining_debt = Math.max(amount_due - final_amount_paid, 0);
 
-    // إدراج العملية (remaining_debt عمود محسوب تلقائياً - لا يُدرج يدوياً)
+    // إدراج العملية (remaining_debt عمود محسوب تلقائياً في القاعدة)
     const insertQuery = `
       INSERT INTO transaction
       (customer_id, product_id, shelf_id, quantity, amount_due, amount_paid, payment_status, notes, type, status, delivered_at, owner_id)
@@ -142,20 +146,14 @@ const createTransaction = async (req, res) => {
       final_shelf_id,
       qty,
       amount_due,
-      final_amount_paid,
+      paidNow,
       final_payment_status,
       notes || null,
       transaction_type,
       final_status,
       owner_id
     ];
-
     const result = await client.query(insertQuery, insertValues);
-
-    // إذا تبقى دين و لم يكن الدفع من الرصيد، نخصم من رصيد العميل (يصبح سالباً = دين)
-    if (remaining_debt > 0 && payment_status !== 'balance') {
-      await client.query('UPDATE customer SET balance = balance - $1 WHERE id = $2', [remaining_debt, customer.id]);
-    }
 
     // تحديث حالة الرف إذا كانت عملية شحن
     if (transaction_type === 'charging' && final_shelf_id) {
@@ -164,7 +162,12 @@ const createTransaction = async (req, res) => {
 
     await client.query('COMMIT');
 
-    res.status(201).json({ message: '✅ تم تسجيل العملية بنجاح', transaction: result.rows[0], customer });
+    const updatedCustomer = await pool.query('SELECT * FROM customer WHERE id = $1', [customer.id]);
+    res.status(201).json({
+      message: '✅ تم تسجيل العملية بنجاح',
+      transaction: result.rows[0],
+      customer: updatedCustomer.rows[0]
+    });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('createTransaction error:', err && err.message ? err.message : err);
@@ -174,10 +177,18 @@ const createTransaction = async (req, res) => {
   }
 };
 
+// التسليم: تحرير الرف + دفعة اختيارية لحظة التسليم (amount_paid في الـ body)
 const deliverTransaction = async (req, res) => {
   const { id } = req.params;
+  const paidNow = Number((req.body && req.body.amount_paid) || 0);
+
   if (!req.owner) return res.status(401).json({ message: 'Unauthorized' });
   const owner_id = req.owner.id;
+
+  if (Number.isNaN(paidNow) || paidNow < 0) {
+    return res.status(400).json({ message: 'قيمة المبلغ المدفوع غير صحيحة' });
+  }
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -187,12 +198,37 @@ const deliverTransaction = async (req, res) => {
       return res.status(404).json({ message: 'العملية غير موجودة' });
     }
     const tx = txRes.rows[0];
+
+    if (tx.status === 'delivered') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: '❌ العملية مسلّمة مسبقاً' });
+    }
+
+    // دفعة عند التسليم (اختيارية): إيداع في حساب العميل + توثيقها
+    if (paidNow > 0) {
+      await client.query('UPDATE customer SET balance = balance + $1 WHERE id = $2', [paidNow, tx.customer_id]);
+      await client.query(
+        'INSERT INTO debt_payment (customer_id, amount, note, paid_at) VALUES ($1, $2, $3, NOW())',
+        [tx.customer_id, paidNow, 'دفعة عند التسليم']
+      );
+      // تحديث سجل العملية نفسها (للتوثيق التاريخي)
+      const newPaid = parseFloat(tx.amount_paid || 0) + paidNow;
+      const newStatus = deriveStatus(parseFloat(tx.amount_due || 0), newPaid);
+      await client.query(
+        'UPDATE transaction SET amount_paid = $1, payment_status = $2 WHERE id = $3',
+        [newPaid, newStatus, id]
+      );
+    }
+
     await client.query('UPDATE transaction SET status = $1, delivered_at = NOW() WHERE id = $2', ['delivered', id]);
+
     if (tx.shelf_id) {
       await client.query('UPDATE shelf SET is_occupied = false, current_customer_id = NULL WHERE id = $1', [tx.shelf_id]);
     }
+
     await client.query('COMMIT');
-    res.json({ message: '✅ تم تسليم الجهاز بنجاح' });
+    const updatedCustomer = await pool.query('SELECT id, name, balance FROM customer WHERE id = $1', [tx.customer_id]);
+    res.json({ message: '✅ تم تسليم الجهاز بنجاح', customer: updatedCustomer.rows[0] });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('deliverTransaction error:', err && err.message ? err.message : err);
@@ -316,12 +352,18 @@ const deleteTransaction = async (req, res) => {
       return res.status(404).json({ message: 'العملية غير موجودة' });
     }
     const tx = txRes.rows[0];
-    if (parseFloat(tx.remaining_debt || 0) > 0) {
-      await client.query('UPDATE customer SET balance = balance + $1 WHERE id = $2', [tx.remaining_debt, tx.customer_id]);
+
+    // عكس الأثر المحاسبي للعملية على حساب العميل:
+    // عند الإنشاء: balance -= (due - paid)  →  عند الحذف: balance += (due - paid)
+    const reverseAmount = parseFloat(tx.amount_due || 0) - parseFloat(tx.amount_paid || 0);
+    if (reverseAmount !== 0) {
+      await client.query('UPDATE customer SET balance = balance + $1 WHERE id = $2', [reverseAmount, tx.customer_id]);
     }
+
     if (tx.status === 'pending' && tx.shelf_id) {
       await client.query('UPDATE shelf SET is_occupied = false, current_customer_id = NULL WHERE id = $1', [tx.shelf_id]);
     }
+
     await client.query('DELETE FROM transaction WHERE id = $1', [id]);
     await client.query('COMMIT');
     res.json({ message: '✅ تم حذف العملية بنجاح' });

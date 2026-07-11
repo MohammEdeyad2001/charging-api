@@ -1,4 +1,7 @@
 // src/controllers/customerController.js
+// المنطق المحاسبي الموحّد:
+//   رصيد العميل (balance) هو المصدر الوحيد للحقيقة.
+//   الإيداع/السداد = balance += المبلغ (يسدّد الدين تلقائياً أو يتحول رصيداً مقدماً).
 const pool = require('../config/db');
 
 const getAllCustomers = async (req, res) => {
@@ -35,6 +38,8 @@ const getCustomerById = async (req, res) => {
   }
 };
 
+// إيداع / سداد دفعة في حساب العميل
+// balance += المبلغ (يغطي الدين إن وُجد، والفائض يبقى رصيداً مقدماً)
 const payDebt = async (req, res) => {
   const { id } = req.params;
   const { amount, note } = req.body;
@@ -56,19 +61,24 @@ const payDebt = async (req, res) => {
       return res.status(404).json({ message: 'الزبون غير موجود' });
     }
 
+    // توثيق الدفعة
     await client.query(
       'INSERT INTO debt_payment (customer_id, amount, note, paid_at) VALUES ($1, $2, $3, NOW())',
       [id, amount, note || null]
     );
 
+    // الإيداع في حساب العميل (جوهر المنطق)
     await client.query('UPDATE customer SET balance = balance + $1 WHERE id = $2', [amount, id]);
 
+    // توزيع الدفعة على العمليات القديمة غير المسددة (توثيق تاريخي فقط —
+    // لا يؤثر على الحساب، فقط يحدّث سجلات العمليات لتعكس السداد بالأقدمية)
     let remaining = parseFloat(amount);
     const pendingTransactions = await client.query(
-      `SELECT * FROM transaction WHERE customer_id = $1 AND remaining_debt > 0 ORDER BY date ASC, received_at ASC FOR UPDATE`,
-      [id]
+      `SELECT * FROM transaction
+       WHERE customer_id = $1 AND owner_id = $2 AND remaining_debt > 0
+       ORDER BY date ASC, received_at ASC FOR UPDATE`,
+      [id, req.owner.id]
     );
-
     for (const tx of pendingTransactions.rows) {
       if (remaining <= 0) break;
       const debt = parseFloat(tx.remaining_debt || 0);
@@ -84,11 +94,10 @@ const payDebt = async (req, res) => {
     }
 
     await client.query('COMMIT');
-
     const updated = await pool.query('SELECT * FROM customer WHERE id = $1', [id]);
     res.json({ message: '✅ تم تسجيل الدفعة بنجاح', customer: updated.rows[0] });
   } catch (err) {
-    await client.query('ROLLBACK');
+    await client.query('ROLLBACK').catch(() => {});
     console.error('payDebt error:', err && err.message ? err.message : err);
     res.status(500).json({ message: '❌ خطأ في السيرفر' });
   } finally {
@@ -109,9 +118,7 @@ const getDebtHistory = async (req, res) => {
       'SELECT * FROM debt_payment WHERE customer_id = $1 ORDER BY paid_at DESC',
       [id]
     );
-
     const totalPaid = debts.rows.reduce((sum, d) => sum + parseFloat(d.amount || 0), 0);
-
     res.json({
       customer: customer.rows[0],
       debt_history: debts.rows,
@@ -128,7 +135,6 @@ const deleteCustomer = async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-
     const customer = await client.query(
       'SELECT * FROM customer WHERE id = $1 AND owner_id = $2 FOR UPDATE',
       [id, req.owner.id]
@@ -137,7 +143,6 @@ const deleteCustomer = async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(404).json({ message: 'الزبون غير موجود' });
     }
-
     if (parseFloat(customer.rows[0].balance || 0) < 0) {
       await client.query('ROLLBACK');
       return res.status(400).json({
@@ -145,21 +150,20 @@ const deleteCustomer = async (req, res) => {
         balance: customer.rows[0].balance
       });
     }
-
     await client.query('DELETE FROM debt_payment WHERE customer_id = $1', [id]);
     await client.query('DELETE FROM transaction WHERE customer_id = $1', [id]);
     await client.query('DELETE FROM customer WHERE id = $1', [id]);
-
     await client.query('COMMIT');
     res.json({ message: '✅ تم حذف الزبون بنجاح' });
   } catch (err) {
-    await client.query('ROLLBACK');
+    await client.query('ROLLBACK').catch(() => {});
     console.error('deleteCustomer error:', err && err.message ? err.message : err);
     res.status(500).json({ message: '❌ خطأ في السيرفر' });
   } finally {
     client.release();
   }
 };
+
 const getAllPayments = async (req, res) => {
   try {
     const result = await pool.query(
