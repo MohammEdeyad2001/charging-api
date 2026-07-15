@@ -31,7 +31,18 @@ const getCustomerById = async (req, res) => {
        LEFT JOIN product p ON t.product_id = p.id
        WHERE t.customer_id = $1 ORDER BY t.date DESC`, [id]
     );
-    res.json({ customer: customer.rows[0], transactions: transactions.rows });
+
+    // الإيداعات/السدادات — لعرضها مع العمليات ككشف حساب موحّد
+    const payments = await pool.query(
+      'SELECT * FROM debt_payment WHERE customer_id = $1 ORDER BY paid_at DESC',
+      [id]
+    );
+
+    res.json({
+      customer: customer.rows[0],
+      transactions: transactions.rows,
+      payments: payments.rows
+    });
   } catch (err) {
     console.error('getCustomerById error:', err && err.message ? err.message : err);
     res.status(500).json({ message: '❌ خطأ في السيرفر' });

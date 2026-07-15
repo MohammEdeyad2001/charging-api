@@ -9,8 +9,7 @@ async function run() {
     await p.query("DELETE FROM transaction");
     await p.query("UPDATE shelf SET is_occupied = false, current_customer_id = NULL");
     await p.query("DELETE FROM customer");
-    console.log("✅ تم مسح البيانات (العمليات، السدادات، الزبائن) وتصفير الرفوف.");
-    console.log("✅ المستخدمون والرفوف والمنتجات باقية كما هي.");
+    console.log("✅ تم مسح البيانات وتصفير الرفوف. المستخدمون والمنتجات والرفوف باقية.");
   } catch (e) {
     console.error("ERROR:", e.message);
   } finally {
