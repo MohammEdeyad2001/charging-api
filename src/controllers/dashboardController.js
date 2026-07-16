@@ -35,7 +35,8 @@ const getDashboard = async (req, res) => {
       ),
       // الرفوف المشغولة + بيانات العملية النشطة على كل رف (لتمكين زر التسليم)
       pool.query(
-        `SELECT s.shelf_number, c.name AS customer_name, t.id AS transaction_id,
+        `SELECT s.shelf_number, c.id AS customer_id, c.name AS customer_name,
+                c.balance AS customer_balance, t.id AS transaction_id,
                 t.amount_due, t.amount_paid, t.remaining_debt, t.payment_status,
                 p.name AS product_name, t.received_at
          FROM shelf s
