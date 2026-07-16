@@ -14,3 +14,11 @@ testcust.js
 testinsert.js
 testshelf2.js
 testtx.js
+checkbal.js
+checkproducts.js
+showall.js
+fullclean.js
+cleandata.js
+seedproducts.js
+fixtypes.js
+fixproducts.js
