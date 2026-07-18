@@ -222,8 +222,20 @@ const deliverTransaction = async (req, res) => {
 
     await client.query('UPDATE transaction SET status = $1, delivered_at = NOW() WHERE id = $2', ['delivered', id]);
 
+  // تحرير الرف فقط إن لم يبقَ عليه أجهزة أخرى غير مُسلَّمة
     if (tx.shelf_id) {
-      await client.query('UPDATE shelf SET is_occupied = false, current_customer_id = NULL WHERE id = $1', [tx.shelf_id]);
+      const stillActive = await client.query(
+        `SELECT COUNT(*) AS cnt FROM transaction
+         WHERE shelf_id = $1 AND owner_id = $2
+           AND (status IS DISTINCT FROM 'delivered')`,
+        [tx.shelf_id, owner_id]
+      );
+      if (parseInt(stillActive.rows[0].cnt, 10) === 0) {
+        await client.query(
+          'UPDATE shelf SET is_occupied = false, current_customer_id = NULL WHERE id = $1',
+          [tx.shelf_id]
+        );
+      }
     }
 
     await client.query('COMMIT');
