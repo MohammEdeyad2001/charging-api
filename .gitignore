@@ -1,6 +1,7 @@
 node_modules/
 .env
 *.json
+!postman/*.json
 !package.json
 !package-lock.json
 check.js
